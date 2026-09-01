@@ -1,1 +1,1 @@
-# cur-url
+# cut-url
