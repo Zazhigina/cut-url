@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Zazhigina/cut-url/internal/storage"
+	"github.com/Zazhigina/cut-url/migrations"
 	"github.com/Zazhigina/cut-url/pkg/random"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"errors"
+	"log"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -43,10 +46,16 @@ func New(connString string) (*PostgresStorage, error) {
 		return nil, fmt.Errorf("failed to ping db: %w", err)
 	}
 
+	if _, err := db.ExecContext(ctx, migrations.CreateURLsTable); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to apply migration: %w", err)
+	}
+	log.Println("Schema is up to date")
+
 	return &PostgresStorage{db: db}, nil
 }
 
-func (p *PostgresStorage) Save(ctx context.Context, originalURL string) (string, error) {
+func (p *PostgresStorage) Save(ctx context.Context, originalURL string) (string, bool, error) {
 	// 1. Проверяем, существует ли уже такой URL
 	var existingShort string
 	err := p.db.QueryRowContext(ctx,
@@ -54,45 +63,39 @@ func (p *PostgresStorage) Save(ctx context.Context, originalURL string) (string,
 	).Scan(&existingShort)
 
 	if err == nil {
-		return existingShort, nil
+		return existingShort, false, nil
 	}
 	if err != sql.ErrNoRows {
-		return "", fmt.Errorf("failed to check existing URL: %w", err)
+		return "", false, fmt.Errorf("failed to check existing URL: %w", err)
 	}
 
-	// 2. Генерируем новую ссылку (с проверкой уникальности).
-	// Попытки ограничены: коллизия кода маловероятна, и бесконечный цикл
-	// под нагрузкой хуже, чем честная ошибка.
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
 		short, err := random.GenerateShortURL()
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 
-		// Пытаемся вставить в БД
 		_, err = p.db.ExecContext(ctx,
 			"INSERT INTO cut_url.urls (origin_url, cut_url) VALUES ($1, $2)",
 			originalURL, short,
 		)
 
 		if err == nil {
-			return short, nil // Успешно вставили
+			return short, true, nil
 		}
 
 		switch uniqueViolationConstraint(err) {
 		case originURLConstraint:
-			// Тот же URL успел вставить параллельный запрос между нашими
-			// SELECT и INSERT. Повтор генерации тут не поможет — забираем
-			// уже существующий код.
-			return p.lookupShort(ctx, originalURL)
+			short, err := p.lookupShort(ctx, originalURL)
+			return short, false, err
 		case cutURLConstraint:
-			continue // Код занят, пробуем следующий
+			continue
 		}
 
-		return "", fmt.Errorf("failed to save URL: %w", err)
+		return "", false, fmt.Errorf("failed to save URL: %w", err)
 	}
 
-	return "", fmt.Errorf("failed to generate unique short URL after %d attempts", maxSaveAttempts)
+	return "", false, fmt.Errorf("failed to generate unique short URL after %d attempts", maxSaveAttempts)
 }
 
 // lookupShort - возвращает уже сохранённый код для оригинального URL
@@ -115,7 +118,7 @@ func (p *PostgresStorage) Get(ctx context.Context, shortURL string) (string, err
 	).Scan(&originalURL)
 
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("URL not found")
+		return "", storage.ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to get URL: %w", err)
@@ -124,13 +127,10 @@ func (p *PostgresStorage) Get(ctx context.Context, shortURL string) (string, err
 	return originalURL, nil
 }
 
-// Close - закрывает соединение с БД
 func (p *PostgresStorage) Close() error {
 	return p.db.Close()
 }
 
-// uniqueViolationConstraint - возвращает имя нарушенного уникального
-// ограничения или пустую строку, если ошибка другого рода.
 func uniqueViolationConstraint(err error) string {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {

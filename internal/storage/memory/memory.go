@@ -2,20 +2,21 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
+	"github.com/Zazhigina/cut-url/internal/storage"
 	"github.com/Zazhigina/cut-url/pkg/random"
 )
 
-// MemoryStorage - хранилище ссылок в оперативной памяти
+const maxEntries = 100_000
+
 type MemoryStorage struct {
-	mu      sync.RWMutex      // Мьютекс для защиты от конкурентного доступа
+	mu      sync.RWMutex
 	urls    map[string]string // shortURL -> originalURL
 	reverse map[string]string // originalURL -> shortURL
+	order   []string
 }
 
-// New - создаёт новое хранилище в памяти
 func New() *MemoryStorage {
 	return &MemoryStorage{
 		urls:    make(map[string]string),
@@ -24,48 +25,52 @@ func New() *MemoryStorage {
 }
 
 // Save - сохраняет оригинальный URL и возвращает короткую ссылку
-func (m *MemoryStorage) Save(ctx context.Context, originalURL string) (string, error) {
+func (m *MemoryStorage) Save(ctx context.Context, originalURL string) (string, bool, error) {
 	// Блокируем доступ на запись (аналог synchronized в Java)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// 1. Проверяем, существует ли уже такой URL
 	if short, exists := m.reverse[originalURL]; exists {
-		return short, nil // Возвращаем существующую ссылку
+		return short, false, nil // Возвращаем существующую ссылку
 	}
 
 	// 2. Генерируем новую короткую ссылку (с проверкой уникальности)
 	for {
 		short, err := random.GenerateShortURL()
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 
-		// Проверяем, не занята ли эта ссылка
 		if _, exists := m.urls[short]; !exists {
-			// Сохраняем связь
 			m.urls[short] = originalURL
 			m.reverse[originalURL] = short
-			return short, nil
+			m.order = append(m.order, short)
+
+			if len(m.order) > maxEntries {
+				oldest := m.order[0]
+				m.order = m.order[1:]
+				delete(m.reverse, m.urls[oldest])
+				delete(m.urls, oldest)
+			}
+
+			return short, true, nil
 		}
-		// Если занята - пробуем сгенерировать другую
 	}
 }
 
 // Get - возвращает оригинальный URL по короткой ссылке
 func (m *MemoryStorage) Get(ctx context.Context, shortURL string) (string, error) {
-	// Блокируем доступ на чтение (можно одновременно читать)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	original, exists := m.urls[shortURL]
 	if !exists {
-		return "", fmt.Errorf("URL not found")
+		return "", storage.ErrNotFound
 	}
 	return original, nil
 }
 
-// Close - закрывает хранилище (для memory ничего не нужно делать)
 func (m *MemoryStorage) Close() error {
 	return nil
 }

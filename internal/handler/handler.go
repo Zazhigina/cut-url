@@ -6,8 +6,11 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/Zazhigina/cut-url/internal/model"
 	"github.com/Zazhigina/cut-url/internal/service"
+	"github.com/Zazhigina/cut-url/internal/storage"
 )
 
 type URLHandler struct {
@@ -19,11 +22,6 @@ func NewURLHandler(service *service.URLService) *URLHandler {
 }
 
 func (h *URLHandler) CreateShortURL(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var req model.CreateURLRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -31,7 +29,7 @@ func (h *URLHandler) CreateShortURL(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	shortURL, err := h.service.CreateShortURL(r.Context(), req.URL)
+	shortURL, created, err := h.service.CreateShortURL(r.Context(), req.URL)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidURL) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -42,25 +40,33 @@ func (h *URLHandler) CreateShortURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := model.CreateURLResponse{ShortURL: shortURL}
+	resp := model.CreateURLResponse{ShortURL: shortURL, Created: created}
+	status := http.StatusCreated
+	if !created {
+		status = http.StatusOK
+		resp.Message = "URL has already been shortened"
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *URLHandler) GetOriginalURL(w http.ResponseWriter, r *http.Request) {
-	shortURL := r.URL.Path[1:]
-	if shortURL == "" {
-		http.Error(w, "Short URL is required", http.StatusBadRequest)
-		return
-	}
+	shortURL := chi.URLParam(r, "shortURL")
 
 	originalURL, err := h.service.GetOriginalURL(r.Context(), shortURL)
 	if err != nil {
-		http.Error(w, "URL not found", http.StatusNotFound)
+
+		if errors.Is(err, storage.ErrNotFound) {
+			http.Error(w, "URL not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("get original url: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Location", originalURL)
-	w.WriteHeader(http.StatusFound) // 302
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(model.GetURLResponse{URL: originalURL})
 }

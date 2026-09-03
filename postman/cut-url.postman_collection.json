@@ -1,0 +1,1804 @@
+{
+  "info": {
+    "name": "cut-url — полный набор проверок",
+    "description": "Проверка сервиса сокращения ссылок.\n\nЭндпоинты:\n- POST /shorten — создать короткую ссылку, тело {\"url\": \"...\"}, ответ 201 {\"cut_url\": \"...\", \"created\": true}; если такой URL уже сокращали — 200 и created: false\n- GET /{code} — 200 и {\"url\": \"<оригинальный URL>\"}\n\ncut_url остаётся на домене исходного адреса: от оригинала берутся схема и хост, а весь путь заменяет 10-символьный код. http://example.com/very/long/path → http://example.com/21bbXZmaEW.\nСам код разрешается через GET на адресе сервиса ({{baseUrl}}/<код>), поэтому запросы папки 04 ходят на baseUrl, а не на домен из cut_url.\n\nПеред запуском: поднять сервер (go run ./cmd/server) и выставить переменную baseUrl.\nЗапускать через Collection Runner сверху вниз — часть запросов использует код, сохранённый предыдущими.\n\nПапки 01-04 проверяют штатное поведение, папка 05 — особенности текущей реализации (тесты там фиксируют, как есть сейчас, а не как должно быть).\n\nПеред прогоном запрос 1.1 генерирует runId и подставляет его в адреса — поэтому коллекцию можно гонять повторно, в том числе на PostgreSQL с сохранёнными данными.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "shortCode",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "shortLink",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "flippedCode",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rootLink",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "url2048",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "url2049",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "runId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "01. Создание ссылки — успех",
+      "item": [
+        {
+          "name": "1.1 POST /shorten — обычный http",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Идентификатор прогона подставляется в адреса ниже, чтобы повторный",
+                  "// запуск коллекции снова создавал ссылки, а не получал 200 на уже",
+                  "// сохранённые (важно для PostgreSQL, где данные переживают рестарт).",
+                  "pm.collectionVariables.set('runId', Date.now().toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Content-Type = application/json', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                  "});",
+                  "const body = pm.response.json();",
+                  "pm.test('В ответе есть поле cut_url', () => pm.expect(body).to.have.property('cut_url'));",
+                  "pm.test('created = true — ссылка создана сейчас', () => pm.expect(body.created).to.eql(true));",
+                  "pm.test('cut_url — на домене исходной ссылки, путь заменён кодом', () => {",
+                  "  pm.expect(body.cut_url).to.match(/^http:\\/\\/example\\.com\\/[a-zA-Z0-9_]{10}$/);",
+                  "});",
+                  "pm.test('Код длиной 10 символов из [a-zA-Z0-9_]', () => {",
+                  "  pm.expect(body.cut_url.split('/').pop()).to.match(/^[a-zA-Z0-9_]{10}$/);",
+                  "});",
+                  "pm.collectionVariables.set('shortLink', body.cut_url);",
+                  "pm.collectionVariables.set('shortCode', body.cut_url.split('/').pop());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://example.com/very/long/path-{{runId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.2 POST /shorten — https с query и якорем",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Схема и хост от оригинала, query и якорь отброшены', () => {",
+                  "  pm.expect(pm.response.json().cut_url).to.match(/^https:\\/\\/example\\.com\\/[a-zA-Z0-9_]{10}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/search?q=go+lang&page=2&r={{runId}}#results\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.3 Идемпотентность — тот же URL даёт тот же код",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200 — ничего не создали, вернули существующее', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Ссылка совпала с выданной в 1.1', () => {",
+                  "  pm.expect(body.cut_url).to.eql(pm.collectionVariables.get('shortLink'));",
+                  "});",
+                  "pm.test('created = false', () => pm.expect(body.created).to.eql(false));",
+                  "pm.test('Есть уведомление, что URL уже сохранён', () => {",
+                  "  pm.expect(body.message).to.eql('URL has already been shortened');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://example.com/very/long/path-{{runId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.4 Пробелы по краям обрезаются (код тот же, что в 1.1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200 — после TrimSpace это тот же URL', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Пробелы обрезаны — ссылка та же, что у 1.1', () => {",
+                  "  pm.expect(body.cut_url).to.eql(pm.collectionVariables.get('shortLink'));",
+                  "});",
+                  "pm.test('created = false', () => pm.expect(body.created).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"   http://example.com/very/long/path-{{runId}}   \"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.5 Схема в верхнем регистре HTTPS://",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 — url.Parse приводит схему к нижнему регистру', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"HTTPS://EXAMPLE.COM/Upper-{{runId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.6 Лишние поля в JSON игнорируются",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 — неизвестные поля игнорируются', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/extra-fields-{{runId}}\",\n  \"ttl\": 3600,\n  \"alias\": \"custom\",\n  \"nested\": { \"a\": 1 }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.7 Кириллица в домене и пути",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Ответ содержит cut_url', () => pm.expect(pm.response.json()).to.have.property('cut_url'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://пример.рф/страница?поиск=тест&r={{runId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.8 Граница длины — ровно 2048 байт",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = 'https://example.com/' + pm.collectionVariables.get('runId') + '/';",
+                  "pm.collectionVariables.set('url2048', base + 'a'.repeat(2048 - base.length));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 — 2048 байт это предел включительно', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"{{url2048}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.9 Нормализация: регистр хоста не создаёт вторую запись",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200 — хост регистронезависим, это тот же URL', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Ссылка та же, что у 1.1', () => {",
+                  "  pm.expect(body.cut_url).to.eql(pm.collectionVariables.get('shortLink'));",
+                  "});",
+                  "pm.test('created = false', () => pm.expect(body.created).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://EXAMPLE.com/very/long/path-{{runId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.10 Нормализация: пустой путь и / это один URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Сначала сокращаем адрес без пути, ответ понадобится следующему запросу.",
+                  "// pm.variables, а не pm.collectionVariables: baseUrl могли переопределить",
+                  "// окружением или ключом --env-var, и тогда запрос ушёл бы на чужой порт.",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/shorten',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ url: 'http://root-' + pm.collectionVariables.get('runId') + '.example.com' }) }",
+                  "}, (err, res) => {",
+                  "  pm.collectionVariables.set('rootLink', err ? '' : res.json().cut_url);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200 — пустой путь нормализован в /', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Ссылка та же, что для адреса без слеша', () => {",
+                  "  pm.expect(body.cut_url).to.eql(pm.collectionVariables.get('rootLink'));",
+                  "});",
+                  "pm.test('created = false', () => pm.expect(body.created).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://root-{{runId}}.example.com/\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02. Создание ссылки — валидация (ожидаем 400)",
+      "item": [
+        {
+          "name": "2.1 Пустая строка",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Текст про пустой url', () => pm.expect(pm.response.text()).to.include('url is empty'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.2 Только пробелы",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — после TrimSpace строка пустая', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"      \"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.3 Поле url отсутствует",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — поле остаётся пустым', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"link\": \"https://example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.4 url = null",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — null распаковывается в пустую строку', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.5 Схема ftp://",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Причина — схема', () => pm.expect(pm.response.text()).to.include('scheme must be http or https'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"ftp://example.com/file.zip\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.6 javascript: — чужая схема отклоняется",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — javascript: должен отклоняться', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"javascript:alert(document.cookie)\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.7 data:",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.8 file://",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"file:///etc/passwd\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.9 mailto:",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"mailto:user@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.10 Протокол-относительная //example.com",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — схемы нет', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"//example.com/evil\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.11 Без схемы — example.com",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.12 Пустой хост — http://",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Причина — пустой host', () => pm.expect(pm.response.text()).to.include('host is empty'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.13 Невалидный URL — управляющие символы",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — url.Parse вернул ошибку', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://exa\\u007fmple.com/\\u0001bad\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.14 Граница длины — 2049 байт",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = 'https://example.com/';",
+                  "pm.collectionVariables.set('url2049', base + 'a'.repeat(2049 - base.length));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Причина — длина', () => pm.expect(pm.response.text()).to.include('longer than 2048'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"{{url2049}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "03. Тело запроса и HTTP-метод",
+      "item": [
+        {
+          "name": "3.1 Битый JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Сообщение Invalid request body', () => pm.expect(pm.response.text()).to.include('Invalid request body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"url\": \"https://example.com\" "
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.2 Пустое тело",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — EOF при разборе', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.3 Массив вместо объекта",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\"https://example.com\"]"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.4 url — число вместо строки",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400 — несовпадение типа', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": 12345\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.5 GET /shorten → 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405', () => pm.response.to.have.status(405));",
+                  "pm.test('Сообщение Method not allowed', () => pm.expect(pm.response.text()).to.include('Method not allowed'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.6 PUT /shorten → 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405', () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.7 PATCH /shorten → 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405', () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.8 DELETE /shorten → 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405', () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "04. Получение оригинального URL",
+      "item": [
+        {
+          "name": "4.1 GET /{{shortCode}} → 200 + оригинальный URL",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type = application/json', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                  "});",
+                  "pm.test('В теле оригинальный URL', () => {",
+                  "  pm.expect(pm.response.json().url).to.eql('http://example.com/very/long/path-' + pm.collectionVariables.get('runId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/{{shortCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "{{shortCode}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.2 GET / (корень) → 404",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404 — на корне ресурса нет', () => pm.response.to.have.status(404));",
+                  "pm.test('Сообщение URL not found', () => pm.expect(pm.response.text()).to.include('URL not found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                ""
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.3 GET /несуществующий код → 404",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Сообщение URL not found', () => pm.expect(pm.response.text()).to.include('URL not found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/zzzzzzzzzz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "zzzzzzzzzz"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.4 Регистр кода важен → 404",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('shortCode') || '';",
+                  "const flipped = code.split('').map(c => c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()).join('');",
+                  "pm.collectionVariables.set('flippedCode', flipped);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404 — коды регистрозависимы', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/{{flippedCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "{{flippedCode}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.5 GET /a/b/c (вложенный путь) → 404",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/a/b/c",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "a",
+                "b",
+                "c"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.6 GET /favicon.ico → 404",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/favicon.ico",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "favicon.ico"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.7 GET /{{shortCode}}?utm=1 — query не влияет на поиск",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200 — query-строка не входит в код', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/{{shortCode}}?utm_source=test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "{{shortCode}}"
+              ],
+              "query": [
+                {
+                  "key": "utm_source",
+                  "value": "test"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "05. Особенности текущей реализации",
+      "description": "Тесты фиксируют фактическое поведение. Зелёный тест здесь не значит «так правильно» — значит «сейчас так». Исключение — 5.1 и 5.2: после перехода на chi метод проверяется, и 405 там как раз правильный ответ.",
+      "item": [
+        {
+          "name": "5.1 POST /{{shortCode}} → 405, маршрут только для GET",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405 — маршрут /{shortURL} объявлен только для GET и HEAD', () => pm.response.to.have.status(405));",
+                  "pm.test('Сообщение Method not allowed', () => pm.expect(pm.response.text()).to.include('Method not allowed'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/{{shortCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "{{shortCode}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.2 DELETE /{{shortCode}} → 405",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405 — проходят только GET и HEAD', () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/{{shortCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "{{shortCode}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.3 Content-Type не проверяется",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 при Content-Type: text/plain', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"url\": \"https://example.com/plain-content-type-{{runId}}\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.4 Мусор после JSON игнорируется",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 — Decoder читает только первое значение', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"url\": \"https://example.com/trailing-{{runId}}\"} мусор {\"url\": \"https://evil.com\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.5 Ошибки отдаются text/plain, а не JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Content-Type ошибки — text/plain', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/plain');",
+                  "});",
+                  "pm.test('Тело не JSON', () => {",
+                  "  let isJson = true;",
+                  "  try { pm.response.json(); } catch (e) { isJson = false; }",
+                  "  pm.expect(isJson, 'ответ об ошибке — обычный текст').to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"ftp://example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.6 Сокращение самого сервиса (петля)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 — сервис соглашается сократить сам себя', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"{{baseUrl}}/{{shortCode}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.7 Внутренние адреса не фильтруются",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201 — приватные сети разрешены', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://169.254.169.254/latest/meta-data/{{runId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "shorten"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -19,7 +19,7 @@ services:
   app:
     build: .
     environment:
-      STORAGE_TYPE: postgres
+      STORAGE_TYPE: ${STORAGE_TYPE:-postgres}
       DB_HOST: db
       DB_PORT: 5432
       DB_USER: postgres

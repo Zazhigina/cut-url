@@ -21,20 +21,18 @@ docker build -t cut-url .
 docker run --rm -p 8080:8080 cut-url
 ```
 
-## API
-
-Создать короткую ссылку:
-
 ```sh
-curl -X POST http://localhost:8080/shorten \
-  -H "Content-Type: application/json" \
-  -d "{\"url\":\"https://example.com/very/long/path\"}"
+STORAGE_TYPE=memory docker compose up --build
 ```
 
-Перейти по ней:
+## Параметры запуска
 
-```sh
-curl -i http://localhost:8080/hf6Vs9rTiT
-```
+Задаются флагом или переменной окружения; флаг приоритетнее.
 
+| Флаг | Переменная | По умолчанию | Что задаёт |
+|---|---|---|---|
+| `-storage` | `STORAGE_TYPE` | `memory` | Хранилище: `memory` или `postgres` |
+| `-port` | `PORT` | `8080` | Порт сервера |
 
+Подключение к PostgreSQL задаётся только переменными окружения: `DB_HOST`,
+`DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE`.

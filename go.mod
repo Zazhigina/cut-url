@@ -2,7 +2,11 @@ module github.com/Zazhigina/cut-url
 
 go 1.27.0
 
-require github.com/jackc/pgx/v5 v5.10.0
+require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/go-chi/chi/v5 v5.3.2
+	github.com/jackc/pgx/v5 v5.10.0
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
