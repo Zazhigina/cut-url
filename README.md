@@ -14,16 +14,14 @@ docker compose up --build
 
 Остановить — `docker compose down`, вместе с данными — `docker compose down -v`.
 
-**Docker + память** — база не нужна:
+**Без Docker, только память** — ни Docker, ни PostgreSQL не нужны:
 
 ```sh
-docker build -t cut-url .
-docker run --rm -p 8080:8080 cut-url
+go run ./cmd/server -storage=memory
 ```
 
-```sh
-STORAGE_TYPE=memory docker compose up --build
-```
+Хранилище по умолчанию и так `memory`, флаг можно не указывать — достаточно
+`go run ./cmd/server`.
 
 ## Параметры запуска
 
